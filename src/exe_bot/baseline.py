@@ -2,6 +2,8 @@ import sc2
 from sc2 import run_game, maps, Race, Difficulty
 from sc2.player import Bot, Computer
 from sc2.constants import NEXUS, PROBE, PYLON, ASSIMILATOR, GATEWAY, CYBERNETICSCORE, STALKER, STARGATE, VOIDRAY
+
+from datetime import datetime
 import random
 import sys
 
@@ -28,7 +30,8 @@ class T800Bot(sc2.BotAI):
                 await self.do(nexus.train(PROBE))
 
     async def build_pylons(self):
-        if self.supply_left < 5 and not self.already_pending(PYLON):
+        if ((self.supply_left < 5 or self.supply_used > self.supply_cap)
+                and not self.already_pending(PYLON)):
             nexuses = self.units(NEXUS).ready
             if nexuses.exists:
                 if self.can_afford(PYLON):
@@ -100,7 +103,12 @@ class T800Bot(sc2.BotAI):
         if self.units(NEXUS).amount < (self.iteration / self.ITER_PER_PHASE) and self.can_afford(NEXUS):
             await self.expand_now()
 
-run_game(maps.get("AbyssalReefLE"), [
-    Bot(Race.Protoss, T800Bot()),
-    Computer(Race.Terran, Difficulty.Hard)
-], realtime=False)
+replay_filename = datetime.now().strftime('baseline-%Y%m%dT%H%M%S.SC2Replay')
+run_game(
+        maps.get("AbyssalReefLE"),
+        [
+            Bot(Race.Protoss, T800Bot()),
+            Computer(Race.Terran, Difficulty.Hard)
+        ],
+        realtime=False,
+        save_replay_as=replay_filename)
