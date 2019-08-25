@@ -10,7 +10,8 @@ import sys
 
 
 class T800Bot(sc2.BotAI):
-    def __init__(self):
+    def __init__(self, log):
+        self.log = log
         self.ITER_PER_PHASE = 150
         self.NEXUS_LIMIT = 5
         self.BASE_NAMES = ['nexus', 'commandcenter', 'orbitalcommand', 'planetaryfortress', 'hatchery']
@@ -129,28 +130,85 @@ class T800Bot(sc2.BotAI):
             if self.can_afford(VOIDRAY) and self.supply_left > 0:
                 await self.do(sg.train(VOIDRAY))
 
-    def find_target(self, state):
-        if len(self.known_enemy_units) > 0:
-            return self.known_enemy_units[0]
+    def find_target(self, state, attacker):
+        target = None
+        enemy_army = self.known_enemy_units.not_structure
+        if len(enemy_army) > 0:
+            target = enemy_army.closest_to(attacker)
+            print('iteration (%d): unit %d at (%d, %d) - attacking closest enemy unit %s at position at (%d, %d)' % (
+                    self.iteration,
+                    attacker.tag,
+                    attacker.position.x,
+                    attacker.position.y,
+                    target.name,
+                    target.position.x,
+                    target.position.y),
+                    file=self.log)
         elif len(self.known_enemy_structures) > 0:
-            return self.known_enemy_structures[0]
+            target = self.known_enemy_structures.closest_to(attacker)
+            print('iteration (%d): unit %d at (%d, %d) - attacking closest enemy structure %s at position at (%d, %d)' % (
+                    self.iteration,
+                    attacker.tag,
+                    attacker.position.x,
+                    attacker.position.y,
+                    target.name,
+                    target.position.x,
+                    target.position.y),
+                    file=self.log)
         else:
-            return self.enemy_start_locations[0]
+            target = self.enemy_start_locations[0]
+            print('iteration (%d): unit %d at (%d, %d) - attacking default enemy start position at (%d, %d)' % (
+                    self.iteration,
+                    attacker.tag,
+                    attacker.position.x,
+                    attacker.position.y,
+                    target.x,
+                    target.y),
+                    file=self.log)
+        return target
 
     async def attack(self):
         attacker_config = {
             STALKER: {'attack_size': 15, 'defend_size': 5},
-            VOIDRAY: {'attack_size': 12, 'defend_size': 2}
+            VOIDRAY: {'attack_size': 16, 'defend_size': 2}
         }
 
         for unit, config in attacker_config.items():
-            if len(self.units(unit).idle) > config['attack_size']:
+            idle_count = len(self.units(unit).idle)
+            if (idle_count > config['attack_size']
+                    or (self.units(NEXUS).amount == 0 and self.units(unit).amount > 0)):
+                target = self.find_target(self.state, self.units(unit).first)
                 for u in self.units(unit).idle:
-                    await self.do(u.attack(self.find_target(self.state)))
-            elif len(self.units(unit).idle) > config['defend_size']:
+                    await self.do(u.attack(target))
+            elif idle_count > config['defend_size']:
+                main_nexus = self.units(NEXUS).first
                 if len(self.known_enemy_units) > 0:
-                    for u in self.units(unit).idle:
-                        await self.do(u.attack(self.known_enemy_units[0]))
+                    enemy_by_distance = sorted(
+                            self.known_enemy_units,
+                            key=lambda enemy: enemy.position.distance_to(main_nexus.position))
+                    closest_enemy = enemy_by_distance[0]
+                    distance = main_nexus.position.distance_to(closest_enemy.position)
+                    if distance <= 50:
+                        for u in self.units(unit).idle:
+                            print('iteration (%d): unit %d at (%d, %d) - defending against: name = %s, position = (%d, %d), distance to nexus = %d' % (
+                                    self.iteration,
+                                    u.tag,
+                                    u.position.x,
+                                    u.position.y,
+                                    closest_enemy.name,
+                                    closest_enemy.position.x,
+                                    closest_enemy.position.y,
+                                    distance),
+                                    file=self.log)
+                            await self.do(u.attack(closest_enemy))
+            else:
+                busy_count = len(self.units(unit)) - idle_count
+                if busy_count > idle_count:
+                    print('iteration (%d): busy units = %d, idle units = %d' % (
+                            self.iteration,
+                            busy_count,
+                            idle_count),
+                            file=self.log)
 
     async def expand(self):
         if (self.units(NEXUS).amount < (self.iteration / (self.ITER_PER_PHASE * 2))
@@ -159,12 +217,14 @@ class T800Bot(sc2.BotAI):
                 and not self.already_pending(NEXUS)):
             await self.expand_now()
 
-replay_filename = datetime.now().strftime('baseline-%Y%m%dT%H%M%S.SC2Replay')
-run_game(
-        maps.get("AbyssalReefLE"),
-        [
-            Bot(Race.Protoss, T800Bot()),
-            Computer(Race.Terran, Difficulty.Hard)
-        ],
-        realtime=False,
-        save_replay_as=replay_filename)
+basename = datetime.now().strftime('baseline-%Y%m%dT%H%M%S')
+replay_filename = basename + '.SC2Replay'
+with open(basename + '.log', 'w') as handle:
+    run_game(
+            maps.get("AbyssalReefLE"),
+            [
+                Bot(Race.Protoss, T800Bot(handle)),
+                Computer(Race.Terran, Difficulty.Hard)
+            ],
+            realtime=False,
+            save_replay_as=replay_filename)
