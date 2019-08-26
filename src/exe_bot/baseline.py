@@ -233,7 +233,7 @@ class T800Bot(sc2.BotAI):
                                     u.tag,
                                     u.position.x,
                                     u.position.y,
-                                    target),
+                                    enemy),
                                     file=self.log)
                             return
                         else:
@@ -266,7 +266,7 @@ with open(basename + '.log', 'w') as handle:
             maps.get("AbyssalReefLE"),
             [
                 Bot(Race.Protoss, T800Bot(handle)),
-                Computer(Race.Terran, Difficulty.Hard)
+                Computer(Race.Zerg, Difficulty.Hard)
             ],
             realtime=False,
             save_replay_as=replay_filename)
