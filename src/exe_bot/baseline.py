@@ -16,8 +16,9 @@ class T800Bot(sc2.BotAI):
         self.ITER_PER_PHASE = 150
         self.NEXUS_LIMIT = 5
         self.BASE_NAMES = ['nexus', 'commandcenter', 'orbitalcommand', 'planetaryfortress', 'hatchery']
-        self.enemy_base_locations = {}
-        self.observer_locations = {}
+        self.assigned_enemy_bases = {}
+        self.unassigned_enemy_bases = {}
+        self.observer_assignment = {}
 
     async def on_step(self, iteration):
         self.iteration = iteration
@@ -32,32 +33,41 @@ class T800Bot(sc2.BotAI):
         await self.attack()
 
     def register_enemy_bases(self):
-        active_bases = [building.position
-                for building in self.known_enemy_structures
-                if building.name.lower() in self.BASE_NAMES]
-        inactive_bases = []
-        for location in self.enemy_base_locations.keys():
-            if location not in active_bases:
-                inactive_bases.append(location)
-        for inactive in inactive_bases:
-            del self.enemy_base_locations[inactive]
+        unassigned = {}
+        active_bases = self.known_enemy_structures.filter(
+            lambda building: building.name.lower() in self.BASE_NAMES
+        )
+        for (observer_tag, base_tag) in self.observer_assignment.items():
+            match = active_bases.find_by_tag(base_tag)
+            if match is None:
+                unassigned[observer_tag] = base_tag
+        for (observer_tag, base_tag) in unassigned.items():
+            del self.observer_assignment[observer_tag]
+            del self.assigned_enemy_bases[base_tag]
         for active in active_bases:
-            if active not in self.enemy_base_locations:
-                self.enemy_base_locations[active] = self.iteration
+            # TODO: Handle Terran structures that can move
+            if active.tag not in self.assigned_enemy_bases.keys():
+                self.unassigned_enemy_bases[active.tag] = active.position
 
     def assign_observer(self, observer):
-        pass
+        if len(self.unassigned_enemy_bases) == 0:
+            return
+        (base_tag, base_position) = list(self.unassigned_enemy_bases.items())[0]
+        self.assigned_enemy_bases[base_tag] = base_position
+        self.observer_assignment[observer.tag] = base_tag
+        del self.unassigned_enemy_bases[base_tag]
 
     def audit_observers(self):
-        alive_observers = sorted(ob.tag for ob in self.units(OBSERVER))
-        dead_observers = []
-        for observer in self.observer_locations.keys():
-            if observer not in alive_observers:
-                dead_observers.append(observer)
-        for observer in dead_observers:
-            del self.observer_locations[observer]
+        dead_observers = {}
+        alive_observers = self.units(OBSERVER)
+        for (observer_tag, base_tag) in self.observer_assignment.items():
+            match = alive_observers.find_by_tag(observer_tag)
+            if match is None:
+                dead_observers[observer_tag] = base_tag
+        for dead in dead_observers.keys():
+            del self.observer_assignment[dead]
         for alive in alive_observers:
-            if alive not in self.observer_locations:
+            if alive.tag not in self.observer_assignment.keys():
                 self.assign_observer(alive)
 
     async def scout(self):
@@ -65,11 +75,20 @@ class T800Bot(sc2.BotAI):
         self.audit_observers()
         if len(self.units(OBSERVER)) == 0:
             return
-        for ob in self.units(OBSERVER).idle:
-            if len(self.enemy_base_locations) == 0:
-                enemy_location = self.enemy_start_locations[0]
+        idle_observers = self.units(OBSERVER).idle
+        start_location_count = len(self.enemy_start_locations)
+        start_used = 0
+        for ob in idle_observers:
+            if ob not in self.observer_assignment:
+                # We have more observers than known enemy bases
+                if start_used < start_location_count:
+                    enemy_location = self.enemy_start_locations[start_used]
+                    start_used += 1
+                else:
+                    continue
             else:
-                enemy_location = list(self.enemy_base_locations)[0]
+                # TODO add some patrol routine
+                enemy_location = list(self.assigned_enemy_bases.values())[0]
             await self.do(ob.move(enemy_location))
 
     async def build_workers(self):
@@ -123,7 +142,7 @@ class T800Bot(sc2.BotAI):
 
     async def build_army(self):
         for rf in self.units(ROBOTICSFACILITY).ready.noqueue:
-            if (self.units(OBSERVER).amount == 0
+            if ((self.units(OBSERVER).amount == 0 or len(self.unassigned_enemy_bases) > 0)
                     and self.can_afford(OBSERVER)
                     and self.supply_left > 0):
                 await self.do(rf.train(OBSERVER))
@@ -177,14 +196,16 @@ class T800Bot(sc2.BotAI):
         }
 
         for unit, config in attacker_config.items():
-            busy_units = self.units(unit) - self.units(unit).idle
+            unit_group = self.units(unit)
+            idle_units = unit_group.idle
+            busy_units = unit_group - idle_units
             busy_count = len(busy_units)
-            idle_count = len(self.units(unit).idle)
+            idle_count = len(idle_units)
 
             if (idle_count > config['attack_size']
                     or (self.units(NEXUS).amount == 0 and self.units(unit).amount > 0)):
                 target = self.find_target(self.state, self.units(unit).first)
-                for u in self.units(unit).idle:
+                for u in idle_units:
                     await self.do(u.attack(target))
             elif idle_count > config['defend_size']:
                 main_nexus = self.units(NEXUS).first
@@ -195,7 +216,7 @@ class T800Bot(sc2.BotAI):
                     closest_enemy = enemy_by_distance[0]
                     distance = main_nexus.position.distance_to(closest_enemy.position)
                     if distance <= 50:
-                        for u in self.units(unit).idle:
+                        for u in idle_units:
                             print('iteration (%d): unit %d at (%d, %d) - defending against: name = %s, tag = %d, position = (%d, %d), distance to nexus = %d' % (
                                     self.iteration,
                                     u.tag,
@@ -209,7 +230,7 @@ class T800Bot(sc2.BotAI):
                                     file=self.log)
                             await self.do(u.attack(closest_enemy))
             elif busy_count > 0:
-                for u in self.units(unit).idle:
+                for u in idle_units:
                     squad_mate = busy_units.closest_to(u)
                     target = squad_mate.order_target
                     if isinstance(target, Point2):
