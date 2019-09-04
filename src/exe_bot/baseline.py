@@ -6,6 +6,7 @@ from sc2.constants import STALKER, STARGATE, VOIDRAY, OBSERVER, ROBOTICSFACILITY
 from sc2.position import Point2
 
 from datetime import datetime
+import math
 import random
 import sys
 
@@ -15,6 +16,8 @@ class T800Bot(sc2.BotAI):
         self.log = log
         self.ITER_PER_PHASE = 150
         self.NEXUS_LIMIT = 5
+        self.PATROL_RADIUS = 10
+        self.PATROL_ARC_NUM = 8
         self.BASE_NAMES = ['nexus', 'commandcenter', 'orbitalcommand', 'planetaryfortress', 'hatchery']
         self.assigned_enemy_bases = {}
         self.unassigned_enemy_bases = {}
@@ -70,25 +73,86 @@ class T800Bot(sc2.BotAI):
             if alive.tag not in self.observer_assignment.keys():
                 self.assign_observer(alive)
 
+    def calc_angle(self, target_position, unit_position):
+        height = unit_position.y - target_position.y
+        width = unit_position.x - target_position.x
+        radians = math.atan2(height, width)
+        return radians
+
+    def calc_position(self, center, radius, radians):
+        map_size = self.game_info.map_size
+        y_offset = math.sin(radians) * radius
+        x_offset = math.cos(radians) * radius
+        x_point = x_offset + center.x
+        y_point = y_offset + center.y
+        if x_point < 0:
+            x_point = 0
+        elif x_point >= map_size[0]:
+            x_point = map_size[0] - 1
+        if y_point < 0:
+            y_point = 0
+        elif y_point >= map_size[1]:
+            y_point = map_size[1] - 1
+        position = Point2(tuple([x_point, y_point]))
+        return position
+
+    def plan_base_search(self, unit_position):
+        return self.enemy_start_locations[0]
+
+    def plan_patrol(self, target_position, unit_position):
+        arc = (math.pi * 2.0) / self.PATROL_ARC_NUM
+        current_angle = self.calc_angle(target_position, unit_position)
+        if current_angle < 0:
+            rounded_angle = arc * math.ceil(current_angle / arc)
+        else:
+            rounded_angle = arc * math.floor(current_angle / arc)
+        next_angle = rounded_angle + arc
+        patrol_waypoint = self.calc_position(target_position, self.PATROL_RADIUS, next_angle)
+        return patrol_waypoint
+
     async def scout(self):
         self.register_enemy_bases()
         self.audit_observers()
-        if len(self.units(OBSERVER)) == 0:
-            return
         idle_observers = self.units(OBSERVER).idle
-        start_location_count = len(self.enemy_start_locations)
-        start_used = 0
         for ob in idle_observers:
-            if ob not in self.observer_assignment:
+            if ob.tag not in self.observer_assignment:
                 # We have more observers than known enemy bases
-                if start_used < start_location_count:
-                    enemy_location = self.enemy_start_locations[start_used]
-                    start_used += 1
-                else:
-                    continue
+                print('iteration (%d): observer %d at (%d, %d) searching for enemy bases' % (
+                            self.iteration,
+                            ob.tag,
+                            ob.position.x,
+                            ob.position.y),
+                            file=self.log)
+                enemy_location = self.plan_base_search(ob.position)
             else:
-                # TODO add some patrol routine
-                enemy_location = list(self.assigned_enemy_bases.values())[0]
+                base_tag = self.observer_assignment[ob.tag]
+                assigned_position = self.assigned_enemy_bases[base_tag]
+                distance = ob.position.distance_to(assigned_position)
+                if distance <= (self.PATROL_RADIUS * 1.05):
+                    # start patroling
+                    enemy_location = self.plan_patrol(assigned_position, ob.position)
+                    print('iteration (%d): observer %d at (%d, %d) patroling base %d at (%d, %d), waypoint (%d, %d)' % (
+                            self.iteration,
+                            ob.tag,
+                            ob.position.x,
+                            ob.position.y,
+                            base_tag,
+                            assigned_position.x,
+                            assigned_position.y,
+                            enemy_location.x,
+                            enemy_location.y),
+                            file=self.log)
+                else:
+                    print('iteration (%d): moving observer %d at (%d, %d) to assigned base %d at (%d, %d)' % (
+                            self.iteration,
+                            ob.tag,
+                            ob.position.x,
+                            ob.position.y,
+                            base_tag,
+                            assigned_position.x,
+                            assigned_position.y),
+                            file=self.log)
+                    enemy_location = assigned_position
             await self.do(ob.move(enemy_location))
 
     async def build_workers(self):
