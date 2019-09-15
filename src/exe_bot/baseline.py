@@ -11,6 +11,141 @@ import random
 import sys
 
 
+def calc_angle(target_position, unit_position):
+    height = unit_position.y - target_position.y
+    width = unit_position.x - target_position.x
+    radians = math.atan2(height, width)
+    return radians
+
+def calc_position(map_size, center, radius, radians):
+    y_offset = math.sin(radians) * radius
+    x_offset = math.cos(radians) * radius
+    x_point = x_offset + center.x
+    y_point = y_offset + center.y
+    if x_point < 0:
+        x_point = 0
+    elif x_point >= map_size[0]:
+        x_point = map_size[0] - 1
+    if y_point < 0:
+        y_point = 0
+    elif y_point >= map_size[1]:
+        y_point = map_size[1] - 1
+    position = Point2(tuple([x_point, y_point]))
+    return position
+
+class PatrolJob():
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+        self.PATROL_RADIUS = 10
+        self.PATROL_ARC_NUM = 8
+
+    def plan_patrol(self, target_position, unit_position):
+        arc = (math.pi * 2.0) / self.PATROL_ARC_NUM
+        current_angle = calc_angle(target_position, unit_position)
+        if current_angle < 0:
+            rounded_angle = arc * math.ceil(current_angle / arc)
+        else:
+            rounded_angle = arc * math.floor(current_angle / arc)
+        next_angle = rounded_angle + arc
+        patrol_waypoint = calc_position(
+                self.game_info.map_size,
+                target_position,
+                self.PATROL_RADIUS,
+                next_angle)
+        return patrol_waypoint
+
+    def do(self, iteration, observer):
+        self.iteration = iteration
+        self.observer = observer
+        distance = self.observer.position.distance_to(self.base_position)
+        if distance <= (self.PATROL_RADIUS * 1.05):
+            # start patroling
+            enemy_location = self.plan_patrol(self.base_position, self.observer.position)
+            print('iteration (%d): observer %d at (%d, %d) patroling base %d at (%d, %d), waypoint (%d, %d)' % (
+                    iteration,
+                    self.observer.tag,
+                    self.observer.position.x,
+                    self.observer.position.y,
+                    self.base_tag,
+                    self.base_position.x,
+                    self.base_position.y,
+                    enemy_location.x,
+                    enemy_location.y),
+                    file=self.log)
+        else:
+            print('iteration (%d): moving observer %d at (%d, %d) to assigned base %d at (%d, %d)' % (
+                    iteration,
+                    self.observer.tag,
+                    self.observer.position.x,
+                    self.observer.position.y,
+                    self.base_tag,
+                    self.base_position.x,
+                    self.base_position.y),
+                    file=self.log)
+            enemy_location = self.base_position
+        return self.observer.move(enemy_location)
+
+
+class SearchJob():
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+        self.START_RADIUS = 10
+        self.SEARCH_ARC_NUM = 8
+        self.radius = self.START_RADIUS
+        self.arcs_searched = 0
+
+    def plan_base_search(self, target_position, unit_position):
+        arc = (math.pi * 2.0) / self.SEARCH_ARC_NUM
+        current_angle = calc_angle(target_position, unit_position)
+        if current_angle < 0:
+            rounded_angle = arc * math.ceil(current_angle / arc)
+        else:
+            rounded_angle = arc * math.floor(current_angle / arc)
+        next_angle = rounded_angle + arc
+        if ((rounded_angle == 0 or rounded_angle == (math.pi * 2.0))
+                and self.arcs_searched == self.SEARCH_ARC_NUM):
+            self.radius += self.START_RADIUS
+            self.arcs_searched = 0
+        waypoint = calc_position(
+                self.game_info.map_size,
+                target_position,
+                self.radius,
+                next_angle)
+        self.arcs_searched += 1
+        return waypoint
+
+    def do(self, iteration, observer):
+        self.iteration = iteration
+        self.observer = observer
+        distance = self.observer.position.distance_to(self.location_position)
+        if distance <= (self.radius * 1.05):
+            # start searching
+            next_waypoint = self.plan_base_search(self.location_position, self.observer.position)
+            print('iteration (%d): observer %d at (%d, %d) searching for base around start location %d at (%d, %d), heading to (%d, %d)' % (
+                        iteration,
+                        self.observer.tag,
+                        self.observer.position.x,
+                        self.observer.position.y,
+                        self.location_id,
+                        self.location_position.x,
+                        self.location_position.y,
+                        next_waypoint.x,
+                        next_waypoint.y),
+                        file=self.log)
+        else:
+            next_waypoint = self.location_position
+            print('iteration (%d): observer %d at (%d, %d) searching enemy start location %d at (%d, %d)' % (
+                        iteration,
+                        self.observer.tag,
+                        self.observer.position.x,
+                        self.observer.position.y,
+                        self.location_id,
+                        self.location_position.x,
+                        self.location_position.y),
+                        file=self.log)
+        return self.observer.move(next_waypoint)
+
+
 class T800Bot(sc2.BotAI):
     def __init__(self, log):
         self.log = log
@@ -21,7 +156,14 @@ class T800Bot(sc2.BotAI):
         self.BASE_NAMES = ['nexus', 'commandcenter', 'orbitalcommand', 'planetaryfortress', 'hatchery']
         self.assigned_enemy_bases = {}
         self.unassigned_enemy_bases = {}
+        self.assigned_enemy_locations = {}
+        self.unassigned_enemy_locations = {}
         self.observer_assignment = {}
+
+    async def on_start_async(self):
+        self.unassigned_enemy_locations = { index : self.enemy_start_locations[index]
+            for index in range(0, len(self.enemy_start_locations))
+        }
 
     async def on_step(self, iteration):
         self.iteration = iteration
@@ -40,10 +182,11 @@ class T800Bot(sc2.BotAI):
         active_bases = self.known_enemy_structures.filter(
             lambda building: building.name.lower() in self.BASE_NAMES
         )
-        for (observer_tag, base_tag) in self.observer_assignment.items():
-            match = active_bases.find_by_tag(base_tag)
-            if match is None:
-                unassigned[observer_tag] = base_tag
+        for (observer_tag, assignment) in self.observer_assignment.items():
+            if isinstance(assignment, PatrolJob):
+                match = active_bases.find_by_tag(assignment.base_tag)
+                if match is None:
+                    unassigned[observer_tag] = assignment.base_tag
         for (observer_tag, base_tag) in unassigned.items():
             del self.observer_assignment[observer_tag]
             del self.assigned_enemy_bases[base_tag]
@@ -52,108 +195,69 @@ class T800Bot(sc2.BotAI):
             if active.tag not in self.assigned_enemy_bases.keys():
                 self.unassigned_enemy_bases[active.tag] = active.position
 
-    def assign_observer(self, observer):
-        if len(self.unassigned_enemy_bases) == 0:
+    def assess_enemy_locations(self):
+        if (len(self.unassigned_enemy_bases) == 0
+                or len(self.assigned_enemy_locations) == 0):
             return
-        (base_tag, base_position) = list(self.unassigned_enemy_bases.items())[0]
-        self.assigned_enemy_bases[base_tag] = base_position
-        self.observer_assignment[observer.tag] = base_tag
-        del self.unassigned_enemy_bases[base_tag]
+        # TODO we should pick the closest observer for reassignment
+        chosen = None
+        job = None
+        for (observer_tag, assignment) in self.observer_assignment.items():
+            if isinstance(assignment, SearchJob):
+                chosen = observer_tag
+                job = assignment
+                break
+        if job is None or chosen is None:
+            return
+        self.unassigned_enemy_locations[job.location_id] = job.location_position
+        del self.assigned_enemy_locations[job.location_id]
+        del self.observer_assignment[chosen]
+
+    def assign_observer(self, observer):
+        if len(self.unassigned_enemy_bases) > 0:
+            (base_tag, base_position) = list(self.unassigned_enemy_bases.items())[0]
+            self.observer_assignment[observer.tag] = PatrolJob(
+                    log=self.log,
+                    game_info=self.game_info,
+                    observer=observer,
+                    base_tag=base_tag,
+                    base_position=base_position)
+            self.assigned_enemy_bases[base_tag] = base_position
+            del self.unassigned_enemy_bases[base_tag]
+        elif len(self.unassigned_enemy_locations) > 0:
+            (location_id, location_position) = list(self.unassigned_enemy_locations.items())[0]
+            self.observer_assignment[observer.tag] = SearchJob(
+                    log=self.log,
+                    game_info=self.game_info,
+                    observer=observer,
+                    location_id=location_id,
+                    location_position=location_position)
+            self.assigned_enemy_locations[location_id] = location_position
+            del self.unassigned_enemy_locations[location_id]
 
     def audit_observers(self):
         dead_observers = {}
         alive_observers = self.units(OBSERVER)
-        for (observer_tag, base_tag) in self.observer_assignment.items():
+        for (observer_tag, assignment) in self.observer_assignment.items():
             match = alive_observers.find_by_tag(observer_tag)
             if match is None:
-                dead_observers[observer_tag] = base_tag
+                dead_observers[observer_tag] = assignment
         for dead in dead_observers.keys():
             del self.observer_assignment[dead]
         for alive in alive_observers:
-            if alive.tag not in self.observer_assignment.keys():
+            if alive.tag not in self.observer_assignment:
                 self.assign_observer(alive)
-
-    def calc_angle(self, target_position, unit_position):
-        height = unit_position.y - target_position.y
-        width = unit_position.x - target_position.x
-        radians = math.atan2(height, width)
-        return radians
-
-    def calc_position(self, center, radius, radians):
-        map_size = self.game_info.map_size
-        y_offset = math.sin(radians) * radius
-        x_offset = math.cos(radians) * radius
-        x_point = x_offset + center.x
-        y_point = y_offset + center.y
-        if x_point < 0:
-            x_point = 0
-        elif x_point >= map_size[0]:
-            x_point = map_size[0] - 1
-        if y_point < 0:
-            y_point = 0
-        elif y_point >= map_size[1]:
-            y_point = map_size[1] - 1
-        position = Point2(tuple([x_point, y_point]))
-        return position
-
-    def plan_base_search(self, unit_position):
-        return self.enemy_start_locations[0]
-
-    def plan_patrol(self, target_position, unit_position):
-        arc = (math.pi * 2.0) / self.PATROL_ARC_NUM
-        current_angle = self.calc_angle(target_position, unit_position)
-        if current_angle < 0:
-            rounded_angle = arc * math.ceil(current_angle / arc)
-        else:
-            rounded_angle = arc * math.floor(current_angle / arc)
-        next_angle = rounded_angle + arc
-        patrol_waypoint = self.calc_position(target_position, self.PATROL_RADIUS, next_angle)
-        return patrol_waypoint
 
     async def scout(self):
         self.register_enemy_bases()
+        self.assess_enemy_locations()
         self.audit_observers()
         idle_observers = self.units(OBSERVER).idle
         for ob in idle_observers:
-            if ob.tag not in self.observer_assignment:
-                # We have more observers than known enemy bases
-                print('iteration (%d): observer %d at (%d, %d) searching for enemy bases' % (
-                            self.iteration,
-                            ob.tag,
-                            ob.position.x,
-                            ob.position.y),
-                            file=self.log)
-                enemy_location = self.plan_base_search(ob.position)
-            else:
-                base_tag = self.observer_assignment[ob.tag]
-                assigned_position = self.assigned_enemy_bases[base_tag]
-                distance = ob.position.distance_to(assigned_position)
-                if distance <= (self.PATROL_RADIUS * 1.05):
-                    # start patroling
-                    enemy_location = self.plan_patrol(assigned_position, ob.position)
-                    print('iteration (%d): observer %d at (%d, %d) patroling base %d at (%d, %d), waypoint (%d, %d)' % (
-                            self.iteration,
-                            ob.tag,
-                            ob.position.x,
-                            ob.position.y,
-                            base_tag,
-                            assigned_position.x,
-                            assigned_position.y,
-                            enemy_location.x,
-                            enemy_location.y),
-                            file=self.log)
-                else:
-                    print('iteration (%d): moving observer %d at (%d, %d) to assigned base %d at (%d, %d)' % (
-                            self.iteration,
-                            ob.tag,
-                            ob.position.x,
-                            ob.position.y,
-                            base_tag,
-                            assigned_position.x,
-                            assigned_position.y),
-                            file=self.log)
-                    enemy_location = assigned_position
-            await self.do(ob.move(enemy_location))
+            if ob.tag in self.observer_assignment:
+                assignment = self.observer_assignment[ob.tag]
+                order = assignment.do(self.iteration, ob)
+                await self.do(order)
 
     async def build_workers(self):
         worker_limit = len(self.units(NEXUS)) * 16
