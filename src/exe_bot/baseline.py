@@ -38,20 +38,25 @@ class PatrolJob():
         self.__dict__.update(kwargs)
         self.PATROL_RADIUS = 10
         self.PATROL_ARC_NUM = 8
+        self.angle = None
 
     def plan_patrol(self, target_position, unit_position):
         arc = (math.pi * 2.0) / self.PATROL_ARC_NUM
-        current_angle = calc_angle(target_position, unit_position)
-        if current_angle < 0:
-            rounded_angle = arc * math.ceil(current_angle / arc)
+        if self.angle is None:
+            current_angle = calc_angle(target_position, unit_position)
+            if current_angle < 0:
+                rounded_angle = arc * math.ceil(current_angle / arc)
+            else:
+                rounded_angle = arc * math.floor(current_angle / arc)
+            next_angle = rounded_angle + arc
         else:
-            rounded_angle = arc * math.floor(current_angle / arc)
-        next_angle = rounded_angle + arc
+            next_angle = self.angle + arc
         patrol_waypoint = calc_position(
                 self.game_info.map_size,
                 target_position,
                 self.PATROL_RADIUS,
                 next_angle)
+        self.angle = next_angle
         return patrol_waypoint
 
     def do(self, iteration, observer):
@@ -91,19 +96,22 @@ class SearchJob():
         self.__dict__.update(kwargs)
         self.START_RADIUS = 10
         self.SEARCH_ARC_NUM = 8
+        self.angle = None
         self.radius = self.START_RADIUS
         self.arcs_searched = 0
 
     def plan_base_search(self, target_position, unit_position):
         arc = (math.pi * 2.0) / self.SEARCH_ARC_NUM
-        current_angle = calc_angle(target_position, unit_position)
-        if current_angle < 0:
-            rounded_angle = arc * math.ceil(current_angle / arc)
+        if self.angle is None:
+            current_angle = calc_angle(target_position, unit_position)
+            if current_angle < 0:
+                rounded_angle = arc * math.ceil(current_angle / arc)
+            else:
+                rounded_angle = arc * math.floor(current_angle / arc)
+            next_angle = rounded_angle + arc
         else:
-            rounded_angle = arc * math.floor(current_angle / arc)
-        next_angle = rounded_angle + arc
-        if ((rounded_angle == 0 or rounded_angle == (math.pi * 2.0))
-                and self.arcs_searched == self.SEARCH_ARC_NUM):
+            next_angle = self.angle + arc
+        if self.arcs_searched == self.SEARCH_ARC_NUM:
             self.radius += self.START_RADIUS
             self.arcs_searched = 0
         waypoint = calc_position(
@@ -111,6 +119,7 @@ class SearchJob():
                 target_position,
                 self.radius,
                 next_angle)
+        self.angle = next_angle
         self.arcs_searched += 1
         return waypoint
 
