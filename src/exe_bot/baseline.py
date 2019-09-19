@@ -5,6 +5,9 @@ from sc2.constants import NEXUS, PROBE, PYLON, ASSIMILATOR, GATEWAY, CYBERNETICS
 from sc2.constants import STALKER, STARGATE, VOIDRAY, OBSERVER, ROBOTICSFACILITY
 from sc2.position import Point2
 
+from strategy.protoss.cannon_rush import CannonRush
+from strategy.protoss.voidray_swarm import VoidRaySwarm
+
 from datetime import datetime
 import math
 import random
@@ -463,7 +466,7 @@ with open(basename + '.log', 'w') as handle:
     run_game(
             maps.get("AbyssalReefLE"),
             [
-                Bot(Race.Protoss, T800Bot(handle)),
+                Bot(Race.Protoss, VoidRaySwarm(handle)),
                 Computer(Race.Zerg, Difficulty.Hard)
             ],
             realtime=False,
